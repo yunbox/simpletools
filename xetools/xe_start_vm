@@ -1,0 +1,33 @@
+#!/bin/bash
+#
+
+export PATH=/usr/local/bin:$PATH
+
+usage()
+{
+        echo "Usage: $0 vm-name-label"
+        exit 0
+}
+
+if [ $# != 1 ]; then
+        usage
+        exit 0
+fi
+
+vm=$1
+LOGFILE=/var/log/eucalyptus/xen/$vm.log
+vmuuid=`xe vm-list name-label="$vm" params=uuid | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+
+echo "`date`: Starting vm $vm ..."  | tee -a $LOGFILE
+xe vm-start uuid="$vmuuid"
+echo "`date`: vm started." | tee -a $LOGFILE
+sleep 1
+domid=`xe vm-list uuid=$vmuuid params=dom-id |awk -F':' '{print $2}' | tr -d ' \n'`
+if [ $domid != "-1" ]; then
+        vncport=`xenstore-read /local/domain/$domid/console/vnc-port`
+        echo "`date`: vm has VNC console port on $vncport" | tee -a $LOGFILE
+else
+        echo "`date`: vm seems to not started or configured with VNC" | tee -a $LOGFILE
+        vncport=0
+fi
+

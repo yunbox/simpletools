@@ -1,0 +1,5 @@
+#!/bin/bash
+# Usage: xe_list_runnings
+#        List running DomU VMs
+
+xe vm-list params=dom-id | sed '/^$/d' | tr -d ' '|grep -v ":0"

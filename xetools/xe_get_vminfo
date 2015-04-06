@@ -1,0 +1,52 @@
+#!/bin/bash
+# Usage: xe_get_vminfo vm-name-label
+#
+export PATH=/usr/local/bin:$PATH
+
+usage()
+{
+	echo "Usage: $0 --name vm-name-label | --domid vm-dom-id | --uuid vm-uuid"
+	exit 0
+}
+
+if [ $# != 2 ]; then
+	usage
+fi
+
+if [ "$1" = "--name" ]; then
+	vmname=$2
+	vmuuid=`xe vm-list name-label="$vmname" params=uuid | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+elif [ "$1" = "--domid" ]; then
+	domid=$2
+	if [ "$domid" = "-1" ]; then
+		usage
+	fi
+	vmuuid=`xe vm-list dom-id=$domid params=uuid | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+	vmname=`xe vm-list dom-id=$domid params=name-label | awk -F':' '{print $2}' | sed 's/^\s*//g' | tr -d '\n'`
+elif [ "$1" = "--uuid" ]; then
+	vmuuid=$2
+	vmname=`xe vm-list uuid=$vmuuid params=name-label | awk -F':' '{print $2}' | sed 's/^\s*//g' | tr -d '\n'`
+else
+	usage
+fi
+
+vmpwrstate=`xe_pwrstate_vm "$vmname"`
+vbduuid=`xe vbd-list vm-uuid="$vmuuid" |grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'` 
+vdiuuid=`xe vbd-list vm-uuid="$vmuuid" |grep vdi-uuid | awk -F':' '{print $2}' | tr -d ' \n'` 
+vifuuid=`xe vif-list vm-uuid="$vmuuid" |grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+vgpuuuid=`xe vgpu-list vm-uuid="$vmuuid" |grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+domid=`xe vm-list uuid=$vmuuid params=dom-id |awk -F':' '{print $2}' | tr -d ' \n'`
+if [ "$domid" != "-1" -a "$domid" != "" ]; then
+        vncport=`xenstore-read /local/domain/$domid/console/vnc-port`
+	if xe vm-list uuid="$vmuuid" params=networks | grep "not in database" >& /dev/null; then
+		vmip="0.0.0.0"
+	else
+		vmip=`xe vm-list uuid="$vmuuid" params=networks |awk -F':' '{print $3}' | sed 's/;.*//g' | tr -d ' \n'`
+	fi
+else
+	vmip="0.0.0.0"
+        vncport=-1
+fi
+
+echo vm-pwr-state=$vmpwrstate,vm-name-label=$vmname,vm-uuid=$vmuuid,vm-vbd-uuid=$vbduuid,vm-vdi-uuid=$vdiuuid,vm-vif-uuid=$vifuuid,vm-vgpu-uuid=$vgpuuuid,vm-ip=$vmip,vm-vncport=$vncport
+

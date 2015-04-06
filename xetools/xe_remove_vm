@@ -1,0 +1,87 @@
+#!/bin/bash
+# Usage: xe_remove_vm vm-name-label
+#
+export PATH=/usr/local/bin:$PATH
+
+usage()
+{
+	echo "Usage: $0 [--name vm-name-label | --domid vm-dom-id | --uuid vm-uuid] --img keep | remove"
+	exit 0
+}
+
+
+if [ $# != 2 -a $# != 4 ]; then
+	usage
+fi
+
+if [ "$1" = "--name" ]; then
+	vmname=$2
+	vmuuid=`xe vm-list name-label="$vmname" params=uuid | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+elif [ "$1" = "--domid" ]; then
+	domid=$2
+	if [ "$domid" = "-1" ]; then
+		usage
+	fi
+	vmuuid=`xe vm-list dom-id=$domid params=uuid | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+	vmname=`xe vm-list dom-id=$domid params=name-label | awk -F':' '{print $2}' | sed 's/^\s*//g' | tr -d '\n'`
+elif [ "$1" = "--uuid" ]; then
+	vmuuid=$2
+	vmname=`xe vm-list uuid=$vmuuid params=name-label | awk -F':' '{print $2}' | sed 's/^\s*//g' | tr -d '\n'`
+else
+	usage
+fi
+
+LOGFILE=/var/log/eucalyptus/xen/$vm.log
+
+imgmode="remove"
+if [ "$3" = "--img" -a "$4" = "keep" ] ; then
+	imgmode="keep"
+	echo "The attached vdi image will be kept for later use." | tee -a $LOGFILE
+else
+	echo "The attached vdi image will be deleted." | tee -a $LOGFILE
+fi
+
+vmpwrstate=`xe_pwrstate_vm "$vmname"`
+if [ "$vmpwrstate" = "RUNNING" -o "$vmpwrstate" = "NOSTATE" ]; then
+	echo "FATAL: Expected power status should be halted, but current it's $vmpwrstate."
+	exit 1
+fi
+
+vbduuid=`xe vbd-list vm-uuid="$vmuuid" |grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'` 
+vdiuuid=`xe vbd-list vm-uuid="$vmuuid" |grep vdi-uuid | awk -F':' '{print $2}' | tr -d ' \n'` 
+vifuuid=`xe vif-list vm-uuid="$vmuuid" |grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+vgpuuuid=`xe vgpu-list vm-uuid="$vmuuid" |grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+domid=`xe vm-list uuid=$vmuuid params=dom-id |awk -F':' '{print $2}' | tr -d ' \n'`
+if [ "$domid" != "-1" -a "$domid" != "" ]; then
+        vncport=`xenstore-read /local/domain/$domid/console/vnc-port`
+	if xe vm-list uuid="$vmuuid" params=networks | grep "not in database" >& /dev/null; then
+		vmip="0.0.0.0"
+	else
+		vmip=`xe vm-list uuid="$vmuuid" params=networks |awk -F':' '{print $3}' | sed 's/;.*//g' | tr -d ' \n'`
+	fi
+else
+	vmip="0.0.0.0"
+        vncport=-1
+fi
+
+echo "VM $vmname info: " | tee -a $LOGFILE
+echo vm-pwr-state=$vmpwrstate,vm-name-label=$vmname,vm-uuid=$vmuuid,vm-vbd-uuid=$vbduuid,vm-vdi-uuid=$vdiuuid,vm-vif-uuid=$vifuuid,vm-vgpu-uuid=$vgpuuuid,vm-ip=$vmip,vm-vncport=$vncport | tee -a $LOGFILE
+
+echo "Start removing all related objects..." | tee -a $LOGFILE
+
+echo "Removing VBD (uuid=$vbduuid)" | tee -a $LOGFILE
+xe vbd-destroy uuid="$vbduuid"
+if [ "$imgmode" = "remove" ]; then
+	echo "Removing VDI (uuid=$vdiuuid)" | tee -a $LOGFILE
+	xe vdi-destroy uuid="$vdiuuid"
+else
+	echo "DO NOT Remove VDI (uuid=$vdiuuid)" | tee -a $LOGFILE
+fi
+echo "Removing VIF (uuid=$vifuuid)" | tee -a $LOGFILE
+xe vif-destroy uuid="$vifuuid"
+echo "Removing VGPU (uuid=$vgpuuuid)" | tee -a $LOGFILE
+xe vgpu-destroy uuid="$vgpuuuid"
+echo "Removing VM (uuid=$vmuuid)" | tee -a $LOGFILE
+xe vm-destroy uuid="$vmuuid"
+
+echo "done." | tee -a $LOGFILE

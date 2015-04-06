@@ -1,0 +1,143 @@
+#!/bin/bash
+# Usage: xe_define_vm vm-name-label tmpluuid sruuid imguuid imgmode memsize cpucore netbr nicmac userid
+#        imgmode:
+#            fullcopy: used to create a new image. so it will fully copy the specified image and will be kept after instance terminated.
+#            clone: used to run an instance normally. the image will be deleted after instance terminated.
+#            existcopy: used to update existing images. so it won't be deleted after instance terminated.
+#        netbr:  network bridge interface
+
+usage()
+{
+	echo "Usage: $0 vm-name-label tmpluuid sruuid imguuid imgmode memsize cpucore networkbridge nicmac userid"
+	echo "       memory size in bytes"
+	echo "       imagemode: fullcopy, clone, existcopy"
+}
+
+if [ $# != 10 ]; then
+	usage
+	exit 0
+fi
+
+USER_DATA_SR_UUID=f52e8234-6c75-5d49-cdea-c69f7be28dfe
+USER_DATA_VDI_TMPL=accdcf32-2864-4afc-a048-13134d191d15
+
+vm=${1}
+tmpluuid=${2}
+sruuid=${3}
+imguuid=${4}
+imgmode=${5}
+memsize=${6}
+cpucnt=${7}
+netbr=${8}
+nicmac=${9}
+userid=${10}
+
+userdatadisk=${userid}_data
+needdatadisk="false"
+
+LOGFILE=/var/log/eucalyptus/xen/$vm.define
+
+echo "`date`: input paramers: vm-name=$vm, template-uuid=$tmpluuid, storage-repository=$sruuid, image-uuid=$imguuid, memory-size=$memsize, cpu-count=$cpucnt" | tee -a $LOGFILE
+# 1. prepare vdi. For image run, we should copy a full image at first. 
+if [ $imgmode = "fullcopy" ]; then
+	echo "`date`: It may be an image run instance, make a full image copy..." | tee -a $LOGFILE 
+	vdiuuid=`xe vdi-copy uuid="$imguuid" sr-uuid="$sruuid"`
+elif [ $imgmode = "clone" ]; then
+	echo "`date`: It's normal run instance, make a copy-on-write clone..." | tee -a $LOGFILE 
+	vdiuuid=`xe vdi-clone uuid="$imguuid" sr-uuid="$sruuid"`
+	needdatadisk="true"
+elif [ $imgmode = "existcopy" ]; then
+	echo "`date`: It's image update run instance, use existing image..." | tee -a $LOGFILE 
+	vdiuuid=$imguuid
+else
+	usage
+	exit 0
+fi
+echo "`date`: created instance image: uuid=$vdiuuid" | tee -a $LOGFILE
+
+# 2. create a vm. It will also create a vdi but we don't want it. So let's destroy it
+#    and attached the one we just created
+echo "`date`: creating vm $vm from template..." | tee -a $LOGFILE
+vmuuid=`xe vm-install new-name-label="$vm" template-uuid="$tmpluuid" sr-uuid="$sruuid"`
+
+vbduuid=`xe vbd-list vm-uuid="$vmuuid" |grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+echo "`date`: auto-generated VBD: $vbduuid" | tee -a $LOGFILE
+
+emptyvdiuuid=`xe vbd-list vm-uuid="$vmuuid" |grep vdi-uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+echo "`date`: auto-generated VDI: $emptyvdiuuid" | tee -a $LOGFILE
+
+# note: vdi-destroy seems to destroy vbd as well. But we still destroy vbd at first here.
+xe vbd-destroy uuid="$vbduuid"
+xe vdi-destroy uuid="$emptyvdiuuid"
+echo "`date`: destroyed auto-generated vbd and vdi because we want the vdi we created." | tee -a $LOGFILE
+
+# 3. connect the vdi we created to vm
+#    device=0 ???
+newvbduuid=`xe vbd-create vm-uuid="$vmuuid" vdi-uuid="$vdiuuid" bootable=true type=disk mode=RW device=0`
+echo "`date`: created new vbd (uuid=$newvbduuid) and connected vdi (uuid=$vdiuuid)" | tee -a $LOGFILE
+
+# 3.1 prepare data disk for user
+#     device=1
+if [ "x$needdatadisk" = "xtrue" ]; then
+	uduuid=`xe vdi-list name-label="$userdatadisk" params=uuid | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+	if [ "x$uduuid" = "x" ]; then
+		echo "`date`: $userid has no data disk yet, create one for him..." | tee -a $LOGFILE
+		udtmpl=`xe vdi-list uuid=${USER_DATA_VDI_TMPL} params=uuid | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+		if [ "x$udtmpl" = "x" ]; then
+			echo "`date`: user data disk template lost, create new disk for ${userid}..." | tee -a $LOGFILE
+			uduuid=`xe vdi-create sr-uuid="${USER_DATA_SR_UUID}" type=user name-label="$userdatadisk" virtual-size=8GiB`
+		else
+			echo "`date`: find user data disk template, copy a new disk for ${userid}..." | tee -a $LOGFILE
+			uduuid=`xe vdi-copy sr-uuid="${USER_DATA_SR_UUID}" uuid="${USER_DATA_VDI_TMPL}"`
+			echo "`date`: update name-label of vdi (uuid=$uduuid) to $userdatadisk" | tee -a $LOGFILE
+			xe vdi-param-set uuid="$uduuid" name-label="$userdatadisk"
+			xe vdi-list uuid=$uduuid params=all | tee -a $LOGFILE
+		fi
+		echo "`date`: created disk (uuid=$uduuid) on SR (uuid=$USER_DATA_SR_UUID) for $userid" | tee -a $LOGFILE
+	fi
+
+	datavbduuid=""
+	if [ "x$uduuid" != "x" ]; then
+		datavbduuid=`xe vbd-create vm-uuid="$vmuuid" vdi-uuid="$uduuid" bootable=false type=disk mode=RW device=1`
+		echo "`date`: created data vbd (uuid=$datavbduuid) and connected vdi (uuid=$uduuid)" | tee -a $LOGFILE
+	fi
+else
+	echo "`date`: it's image rum, data disk is not required." | tee -a $LOGFILE
+fi
+
+# 4. adjust memory and cpu
+xe vm-param-set uuid="$vmuuid" memory-static-max=$memsize memory-dynamic-max=$memsize memory-dynamic-min=$memsize VCPUs-max=$cpucnt VCPUs-at-startup=$cpucnt
+echo "`date`: adjusted memory and cpu core count" | tee -a $LOGFILE
+
+# 5. create and attach VIF
+echo "`date`: using network bridge $netbr to create VIF..." | tee -a $LOGFILE
+netuuid=`xe network-list bridge="$netbr" | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+vifuuid=`xe vif-create vm-uuid="$vmuuid" network-uuid="$netuuid" device=0 mac="$nicmac"`
+echo "`date`: created vif(uuid=$vifuuid) on $netbr (uuid=$netuuid)." | tee -a $LOGFILE
+xe vif-plug uuid=$vifuuid 2>&1 | tee -a $LOGFILE
+echo "`date`: plugged vif into vm." | tee -a $LOGFILE
+
+# 6. create and attach VGPU, hardcode gpu-group and vgpu-type atm
+# 4e28...e1f4 is K100, ed1b...5154 is K140Q
+#vgpuuuid=`xe vgpu-create vm-uuid="$vmuuid" gpu-group-uuid=45b52d2a-5f2f-055b-ee9c-b3443bd654c3 vgpu-type-uuid=4e286c07-c424-53e2-0e24-4e9e0140e1f4`
+vgpuuuid=`xe vgpu-create vm-uuid="$vmuuid" gpu-group-uuid=45b52d2a-5f2f-055b-ee9c-b3443bd654c3 vgpu-type-uuid=ed1b28af-8dff-c7e5-46a7-495611295154`
+echo "`date`: create and attached VGPU (uuid=$vgpuuuid) to vm." | tee -a $LOGFILE
+
+# 7. display all settings
+xe vm-list uuid="$vmuuid" params=uuid,name-label,power-state,memory-static-max,VCPUs-max,dom-id | tee -a $LOGFILE
+
+# 8. start vm
+if false; then
+	echo "`date`: Starting vm $vm ..."  | tee -a $LOGFILE
+	xe vm-start uuid="$vmuuid"
+	echo "`date`: vm started." | tee -a $LOGFILE
+	sleep 1
+	domid=`xe vm-list uuid=$vmuuid params=dom-id |awk -F':' '{print $2}' | tr -d ' \n'`
+	if [ $domid != "-1" ]; then
+		vncport=`xenstore-read /local/domain/$domid/console/vnc-port`
+		echo "`date`: vm has VNC console port on $vncport" | tee -a $LOGFILE
+	else
+		echo "`date`: vm seems to not started or configured with VNC" | tee -a $LOGFILE
+		vncport=0
+	fi
+fi

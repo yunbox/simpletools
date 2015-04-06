@@ -1,0 +1,6 @@
+#!/bin/bash
+# Usage: xe_list_runnings
+#        List running DomU VMs
+
+dom0uuid=`xe vm-list | grep -C 2 -i "control domain" | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+xe vm-list params=uuid | sed '/^$/d' | tr -d ' '| awk -F':' '{print $2}' | grep -v "$dom0uuid"

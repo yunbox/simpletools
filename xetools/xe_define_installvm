@@ -1,0 +1,95 @@
+#!/bin/bash
+# Usage: xe_define_vm vm-name-label tmpluuid sruuid imguuid imgname memsize cpucore netbr nicmac
+#        imgmode:
+#            fullcopy: used to create a new image. so it will fully copy the specified image and will be kept after instance terminated.
+#            clone: used to run an instance normally. the image will be deleted after instance terminated.
+#            existcopy: used to update existing images. so it won't be deleted after instance terminated.
+#        netbr:  network bridge interface
+
+usage()
+{
+	echo "Usage: $0 vm-name-label tmpluuid sruuid vdisize imgmode memsize cpucore networkbridge nicmac"
+	echo "       memory size in bytes"
+	echo "       vdisize in bytes"
+	echo "       imagemode: fullcopy, clone, existcopy"
+}
+
+if [ $# != 9 ]; then
+	usage
+	exit 0
+fi
+
+vm=$1
+tmpluuid=$2
+sruuid=$3
+imgsize=$4
+imgname=$5
+memsize=$6
+cpucnt=$7
+netbr=$8
+nicmac=$9
+
+LOGFILE=/var/log/eucalyptus/xen/$vm.log
+
+echo "`date`: input paramers: vm-name=$vm, template-uuid=$tmpluuid, storage-repository=$sruuid, imagename=$imgname, imagesize=$imgsize, memory-size=$memsize, cpu-count=$cpucnt" | tee -a $LOGFILE
+# 1. prepare vdi. For image run, we should copy a full image at first. 
+vdiuuid=`xe vdi-create sr-uuid="$sruuid" name-label="$imgname" virtual-size=$imgsize type=system`
+echo "`date`: created instance image: uuid=$vdiuuid" | tee -a $LOGFILE
+
+# 2. create a vm. It will also create a vdi but we don't want it. So let's destroy it
+#    and attached the one we just created
+echo "`date`: creating vm $vm from template..." | tee -a $LOGFILE
+vmuuid=`xe vm-install new-name-label="$vm" template-uuid="$tmpluuid" sr-uuid="$sruuid"`
+
+vbduuid=`xe vbd-list vm-uuid="$vmuuid" |grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+echo "`date`: auto-generated VBD: $vbduuid" | tee -a $LOGFILE
+
+emptyvdiuuid=`xe vbd-list vm-uuid="$vmuuid" |grep vdi-uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+echo "`date`: auto-generated VDI: $emptyvdiuuid" | tee -a $LOGFILE
+
+# note: vdi-destroy seems to destroy vbd as well. But we still destroy vbd at first here.
+xe vbd-destroy uuid="$vbduuid"
+xe vdi-destroy uuid="$emptyvdiuuid"
+echo "`date`: destroyed auto-generated vbd and vdi because we want the vdi we created." | tee -a $LOGFILE
+
+# 3. connect the vdi we created to vm
+#    device=0 ???
+newvbduuid=`xe vbd-create vm-uuid="$vmuuid" vdi-uuid="$vdiuuid" bootable=true type=disk mode=RW device=0`
+echo "`date`: created new vbd (uuid=$newvbduuid) and connected vdi (uuid=$vdiuuid)" | tee -a $LOGFILE
+
+xe vbd-create vm-uuid="$vmuuid" vdi-uuid=0ea86508-d8fb-4eee-863c-425075e44346 bootable=true type=CD mode=RO device=1
+
+# 4. adjust memory and cpu
+xe vm-param-set uuid="$vmuuid" memory-static-max=$memsize memory-dynamic-max=$memsize memory-dynamic-min=$memsize VCPUs-max=$cpucnt VCPUs-at-startup=$cpucnt
+echo "`date`: adjusted memory and cpu core count" | tee -a $LOGFILE
+
+# 5. create and attach VIF
+echo "`date`: using network bridge $netbr to create VIF..." | tee -a $LOGFILE
+netuuid=`xe network-list bridge="$netbr" | grep ^uuid | awk -F':' '{print $2}' | tr -d ' \n'`
+vifuuid=`xe vif-create vm-uuid="$vmuuid" network-uuid="$netuuid" device=0 mac="$nicmac"`
+echo "`date`: created vif(uuid=$vifuuid) on $netbr (uuid=$netuuid)." | tee -a $LOGFILE
+xe vif-plug uuid=$vifuuid 2>&1 | tee -a $LOGFILE
+echo "`date`: plugged vif into vm." | tee -a $LOGFILE
+
+# 6. create and attach VGPU, hardcode gpu-group and vgpu-type atm
+vgpuuuid=`xe vgpu-create vm-uuid="$vmuuid" gpu-group-uuid=c1359c4f-0355-30e8-a45b-e8267428ca53 vgpu-type-uuid=7d7bc4f5-9a14-fa4f-fb86-df919307f74a`
+echo "`date`: create and attached VGPU (uuid=$vgpuuuid) to vm." | tee -a $LOGFILE
+
+# 7. display all settings
+xe vm-list uuid="$vmuuid" params=uuid,name-label,power-state,memory-static-max,VCPUs-max,dom-id | tee -a $LOGFILE
+
+# 8. start vm
+if true; then
+	echo "`date`: Starting vm $vm ..."  | tee -a $LOGFILE
+	xe vm-start uuid="$vmuuid"
+	echo "`date`: vm started." | tee -a $LOGFILE
+	sleep 1
+	domid=`xe vm-list uuid=$vmuuid params=dom-id |awk -F':' '{print $2}' | tr -d ' \n'`
+	if [ $domid != "-1" ]; then
+		vncport=`xenstore-read /local/domain/$domid/console/vnc-port`
+		echo "`date`: vm has VNC console port on $vncport" | tee -a $LOGFILE
+	else
+		echo "`date`: vm seems to not started or configured with VNC" | tee -a $LOGFILE
+		vncport=0
+	fi
+fi

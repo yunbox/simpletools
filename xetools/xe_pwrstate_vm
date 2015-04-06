@@ -1,0 +1,18 @@
+#!/bin/bash
+# Usage: xe_pwrstate_vm vm-name-label
+
+if [ $# != 1 ]; then
+	echo "Usage: $0 vm-name-label"
+	exit 0
+fi
+
+vm=$1
+vmpwr=`xe vm-list name-label="$vm" params=power-state | tr -d ' \n'`
+if echo $vmpwr |grep -i running >& /dev/null; then
+	echo -n RUNNING
+elif echo $vmpwr |grep -i halted >& /dev/null; then
+	echo -n SHUTDOWN
+else
+	echo -n NOSTATE
+fi
+exit 0

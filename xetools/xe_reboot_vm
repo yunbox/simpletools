@@ -1,0 +1,21 @@
+#!/bin/bash
+# Usage: xe_reboot_vm vm-name-label
+
+if [ $# != 1 ]; then
+	echo "Usage: $0 vm-name-label"
+	exit 0
+fi
+
+vm=$1
+vmpwr=`xe vm-list name-label="$vm" params=power-state | tr -d ' \n'`
+if echo $vmpwr |grep -i running; then
+	xe vm-reboot name-label="$vm"
+	exit 0
+elif [ "x$vmpwr" = "x" ]; then
+	echo "$vm not existed."
+	exit 2
+else
+	echo "$vm not running"
+	echo $vmpwr
+	exit 1
+fi

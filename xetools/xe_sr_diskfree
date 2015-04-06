@@ -1,0 +1,22 @@
+#!/bin/bash
+#
+
+export PATH=/usr/local/bin:$PATH
+
+usage()
+{
+        echo "Usage: $0 sr-uuid"
+	exit 0
+}
+
+if [ $# != 1 ]; then
+        usage
+fi
+
+sruuid=$1
+
+totaldisk=`xe sr-list uuid="$sruuid" params=physical-size | awk -F':' '{print $2}' | tr -d ' \n'`
+useddisk=`xe sr-list uuid="$sruuid" params=virtual-allocation | awk -F':' '{print $2}' | tr -d ' \n'`
+
+echo "totaldisk=$totaldisk,useddisk=$useddisk"
+

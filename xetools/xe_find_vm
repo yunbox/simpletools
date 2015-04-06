@@ -1,0 +1,17 @@
+#!/bin/bash
+# Usage: xe_find_vm vm-name-label
+
+if [ $# != 1 ]; then
+	echo "Usage: $0 vm-name-label"
+	exit 0
+fi
+
+vm=$1
+vmpwr=`xe vm-list name-label="$vm" params=uuid | grep uuid`
+if [ "x$vmpwr" != "x" ]; then
+	echo -n $vm
+	exit 0
+else
+	echo -n "none"
+	exit 1
+fi

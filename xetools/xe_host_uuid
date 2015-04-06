@@ -1,0 +1,4 @@
+#!/bin/bash
+echo $PATH
+export PATH=/usr/sbin:/usr/local/bin:$PATH
+xe host-list name-label=`hostname` | grep uuid | awk -F':' '{print $2}' | tr -d ' '
